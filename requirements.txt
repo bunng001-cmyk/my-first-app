@@ -1,2 +1,6 @@
-yfinance
+streamlit
+requests
+beautifulsoup4
+finance-datareader
 plotly
+pandas
