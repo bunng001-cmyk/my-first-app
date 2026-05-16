@@ -6,10 +6,9 @@ import plotly.graph_objects as go
 import pandas as pd
 from datetime import datetime
 
-# 0. 페이지 기본 설정
 st.set_page_config(layout="wide")
 
-# --- 1. 네이버 종합 증권 데이터 크롤링 ---
+# --- 1. 네이버 종합 증권 데이터 크롤링 (ETF 호환 및 예외 처리 완벽 적용) ---
 @st.cache_data(ttl=60)
 def get_naver_stock_data(code, run_mode):
     try:
@@ -18,17 +17,26 @@ def get_naver_stock_data(code, run_mode):
         res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         
+        # 종목명 및 현재가 추출
         stock_name = soup.find("div", {"class": "wrap_company"}).find("h2").text
         no_today = soup.find("div", {"class": "rate_info"}).find("p", {"class": "no_today"})
         current_price = float(no_today.find("span", {"class": "blind"}).text.replace(",", ""))
         
+        # 💡 [치명적 버그 1 완벽 해결] ETF 검색 시 앱 튕김 현상 방어
         aside_aside = soup.find("div", {"class": "aside_invest_info"})
-        per_text = aside_aside.find("em", {"id": "_per"}).text if aside_aside.find("em", {"id": "_per"}) else "0"
-        pbr_text = aside_aside.find("em", {"id": "_pbr"}).text if aside_aside.find("em", {"id": "_pbr"}) else "0"
+        if aside_aside:
+            per_elem = aside_aside.find("em", {"id": "_per"})
+            pbr_elem = aside_aside.find("em", {"id": "_pbr"})
+            per_text = per_elem.text if per_elem else "0"
+            pbr_text = pbr_elem.text if pbr_elem else "0"
+        else:
+            # ETF 등 밸류에이션 박스가 없는 종목은 안전하게 0으로 처리
+            per_text, pbr_text = "0", "0"
+            
+        per = float(per_text.replace(",", "")) if per_text not in ["N/A", "0"] else 0.0
+        pbr = float(pbr_text.replace(",", "")) if pbr_text not in ["N/A", "0"] else 0.0
         
-        per = float(per_text.replace(",", "")) if per_text != "N/A" else 0.0
-        pbr = float(pbr_text.replace(",", "")) if pbr_text != "N/A" else 0.0
-        
+        # 수급 데이터 추출
         sub_url = f"https://finance.naver.com/item/frgn.naver?code={code}"
         sub_res = requests.get(sub_url, headers=headers, timeout=5)
         sub_soup = BeautifulSoup(sub_res.text, 'html.parser')
@@ -36,10 +44,8 @@ def get_naver_stock_data(code, run_mode):
         frgn_table = sub_soup.find("table", {"summary": "외국인 기관 매매동향 연속 정보"})
         rows = frgn_table.find_all("tr") if frgn_table else []
         
-        net_foreigner = 0.0
-        net_institution = 0.0
+        net_foreigner, net_institution = 0.0, 0.0
         target_date_str = ""
-        
         target_row_index = 1 if run_mode == "장중 (전일 확정 데이터 조회)" else 0
         valid_row_count = 0
         
@@ -83,7 +89,7 @@ def get_historical_data(code):
         return None
 
 # --- 대시보드 UI 구동 ---
-st.title("📱 줏대있는 개미의 진입 전 종목 선별 시스템")
+st.title("📱 줏대있는 개미의 무결점 종목 선별 시스템")
 
 mode_cols = st.columns(2)
 with mode_cols[0]:
@@ -94,7 +100,7 @@ with mode_cols[1]:
                         horizontal=True)
 
 if not stock_code.isdigit() or len(stock_code) != 6:
-    st.error("⚠️ 6자리 숫자 코드(예: 005930)를 입력해주세요!")
+    st.error("⚠️ 6자리 숫자 코드(예: 005930, 005935, ETF코드)를 입력해주세요!")
     st.stop()
 
 setup_cols = st.columns(3)
@@ -109,7 +115,7 @@ basic_data = get_naver_stock_data(stock_code, run_mode)
 chart_data = get_historical_data(stock_code)
 
 if basic_data is None:
-    st.error("네이버 증권 통신 실패. 네트워크 연결을 확인하시거나 잠시 후 다시 시도해주세요.")
+    st.error("네이버 증권 통신 실패. 네트워크 연결 또는 상장폐지 여부를 확인해 주세요.")
 else:
     is_chart_available = True
     if chart_data is None:
@@ -170,9 +176,14 @@ else:
         elif vol_ratio >= 1.0: f4_score, f4_desc = 75.0, f"거래량 {vol_ratio:.1f}배 (평이한 유입)"
         else: f4_score, f4_desc = 40.0, f"거래량 {vol_ratio:.1f}배 (시장 소외)"
 
-        disparity = (now_price / ema20) * 100
-        if 98 <= disparity <= 102: f9_score, f9_desc = 95.0, f"🎯 핵심 지지선 안착 (이격도 {disparity:.1f}%)"
-        else: f9_score, f9_desc = 55.0, f"지지선 이탈 또는 이격 과다 (이격도 {disparity:.1f}%)"
+        # 💡 [치명적 버그 2 완벽 해결] 액면분할 등으로 인한 수정주가 괴리 에러 방어
+        disparity = (now_price / ema20) * 100 if ema20 > 0 else 100
+        if disparity < 50 or disparity > 200:
+            f9_score, f9_desc = 50.0, f"⚠️ 액면분할/배당락 등 가격 왜곡 감지 (수동 확인 요망)"
+        elif 98 <= disparity <= 102: 
+            f9_score, f9_desc = 95.0, f"🎯 핵심 지지선 안착 (이격도 {disparity:.1f}%)"
+        else: 
+            f9_score, f9_desc = 55.0, f"지지선 이탈 또는 이격 과다 (이격도 {disparity:.1f}%)"
         
     if net_f > 0 and net_i > 0: f6_score, f6_desc = 95.0, f"🎯 쌍끌이 매수 확인 (외인:{int(net_f):,}, 기관:{int(net_i):,})"
     elif net_f > 0 or net_i > 0:
@@ -212,7 +223,6 @@ else:
         if is_chart_available:
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=plot_df['Date'], y=plot_df['Close'], name='종가 추이', line=dict(color='black', width=2)))
-            # 💡 [버그 완벽 수정] 이평선 그릴 때도 잘라낸 데이터(plot_df)를 사용하여 X축/Y축 오류 완전 차단
             fig.add_trace(go.Scatter(x=plot_df['Date'], y=plot_df['EMA20'], name='EMA20', line=dict(color='blue', dash='dot')))
             fig.add_trace(go.Scatter(x=plot_df['Date'], y=plot_df['EMA50'], name='EMA50', line=dict(color='orange')))
             fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10), legend=dict(orientation="h"))
@@ -239,3 +249,4 @@ else:
                     st.markdown(f"**{item['title']}**")
                     color = "#2ECC71" if item['score'] >= 80 else "#E67E22" if item['score'] >= 60 else "#C0392B"
                     st.markdown(f"<h3 style='color: {color}; margin:0;'>{item['score']} 점</h3>", unsafe_allow_html=True)
+                    st.caption(item['desc'])
