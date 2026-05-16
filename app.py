@@ -6,32 +6,25 @@ import requests
 from bs4 import BeautifulSoup
 import re
 
-# 페이지 기본 설정 (다크모드 및 넓은 화면)
+# 페이지 기본 설정
 st.set_page_config(page_title="줏대있는 개미의 9단 철벽 필터 시스템", layout="wide")
 
 # ----------------------------------------------------------------#############
-# [특수 보급] 한국 주식 네이버 금융 크롤링 엔진 (수급, 지분율, 재무지표 전원 타격)
+# [특수 보급] 국내 전산망 정밀 타격 엔진 (PER, PBR, ROE, 부채, 수급 100% 수집)
 # ----------------------------------------------------------------#############
 def get_korean_stock_data(ticker_code):
-    clean_ticker = re.sub(r'[^0-9]', '', ticker_code) # 숫자만 파싱
+    clean_ticker = re.sub(r'[^0-9]', '', ticker_code)
     data = {
-        'foreigner_buy': 0,
-        'institution_buy': 0,
-        'major_holder_ratio': 35.0,
-        'per': 0.0,
-        'pbr': 0.0,
-        'roe': 0.0,
-        'debt_ratio': 100.0,
-        'error': False
+        'foreigner_buy': 0, 'institution_buy': 0, 'major_holder_ratio': 35.0,
+        'per': 0.0, 'pbr': 0.0, 'roe': 0.0, 'debt_ratio': 100.0, 'error': False
     }
     try:
-        # 1. 외인/기관 수급 및 기본 밸류에이션 (PER/PBR) 타격
+        # 1. 외인/기관 수급 페이지 타격 (최근 5일 매매동향 합산)
         url_sise = f"https://finance.naver.com/item/frgn.naver?code={clean_ticker}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url_sise, headers=headers)
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        # 수급 계산
         tables = soup.find_all('table', class_='type2')
         if tables:
             rows = tables[0].find_all('tr')
@@ -48,51 +41,48 @@ def get_korean_stock_data(ticker_code):
             data['foreigner_buy'] = f_sum
             data['institution_buy'] = i_sum
 
-        # 2. 기업 종합 요약 페이지에서 PER, PBR, ROE, 부채비율 정밀 징집
+        # 2. 메인 페이지에서 실시간 PER, PBR 징집
         url_main = f"https://finance.naver.com/item/main.naver?code={clean_ticker}"
         res_main = requests.get(url_main, headers=headers)
         soup_main = BeautifulSoup(res_main.text, 'html.parser')
         
-        # PER, PBR 텍스트 파싱
         per_element = soup_main.find('em', id='_per')
         pbr_element = soup_main.find('em', id='_pbr')
         if per_element: data['per'] = float(per_element.text.replace(',', '').strip())
         if pbr_element: data['pbr'] = float(pbr_element.text.replace(',', '').strip())
 
-        # 대주주 지분율 및 ROE 요약 데이터 (JSON API 타격)
+        # 3. 대주주 지분율 및 ROE, 부채비율 종합 타격
         url_analysis = f"https://wrapper.finance.naver.com/v1/item/summary?code={clean_ticker}"
         res_analysis = requests.get(url_analysis, headers=headers)
         if res_analysis.status_code == 200:
             json_data = res_analysis.json()
             if 'result' in json_data and json_data['result']:
                 result = json_data['result']
-                # 대주주 지분율
                 if 'majorHolders' in result and result['majorHolders']:
                     data['major_holder_ratio'] = float(result['majorHolders'][0].get('shareRatio', 35.0))
-                # 재무 비율 (ROE, 부채비율 최신 분기/연간 추출)
                 if 'bizFinancials' in result and result['bizFinancials']:
                     biz = result['bizFinancials']
                     if len(biz) > 0:
-                        data['roe'] = float(biz[-1].get('roe', 5.0) or 5.0)
+                        data['roe'] = float(biz[-1].get('roe', 0.0) or 0.0)
                         data['debt_ratio'] = float(biz[-1].get('debtRatio', 100.0) or 100.0)
-                    
+                        
     except Exception as e:
         data['error'] = True
     return data
 
 # ----------------------------------------------------------------#############
-# 전장 지휘 통제실 (UI 구현)
+# 본부 전장 지휘실 UI 구역
 # ----------------------------------------------------------------#############
-st.title("🪖 줏대 있는 은철 개미의 9단 철벽 필터 시스템 (v3.0 완벽 복구본)")
+st.title("🪖 줏대 있는 은철 개미의 9단 철벽 필터 시스템 (v3.8 데이터 투명 공개형)")
 st.markdown("---")
 
 st.sidebar.header("🕹️ 전술 통제소")
-ticker_input = st.sidebar.text_input("🎯 검색할 종목 번호 입력 (숫자만 입력 가능)", value="005930").strip()
+ticker_input = st.sidebar.text_input("🎯 검색할 종목 번호 입력", value="005930").strip()
 
 is_etf_or_pref = st.sidebar.checkbox("✅ ETF 또는 우선주입니까?")
-is_financial = st.sidebar.checkbox("🏦 금융주(은행/지주/증권)입니까?")
+is_financial = st.sidebar.checkbox("🏦 금융주입니까?")
 
-# 주소 자동 보정 및 플래그 세팅
+# 한국 주식 주소 자동 보정
 if ticker_input.isdigit():
     ticker_final = ticker_input + ".KS"
     is_korean = True
@@ -101,22 +91,18 @@ else:
     is_korean = ".KS" in ticker_final or ".KQ" in ticker_final
 
 if ticker_final:
-    with st.spinner("📦 전산망 교차 검문 및 데이터 보급 중..."):
+    with st.spinner("📦 전산망 교차 검문 및 데이터 수집 중..."):
         stock = yf.Ticker(ticker_final)
         df = stock.history(period="1y")
-        
-        # [핵심 개조] 딕셔너리 안전 기동 (KeyError 지뢰 전면 제거)
         info = stock.info if stock.info else {}
         
-        # 한국 주식이면 국내 네이버 전산망에서 데이터 완전 징집
-        naver_data = {'foreigner_buy': 0, 'institution_buy': 0, 'major_holder_ratio': 35.0, 'per': 0.0, 'pbr': 0.0, 'roe': 5.0, 'debt_ratio': 100.0}
+        naver_data = {'foreigner_buy': 0, 'institution_buy': 0, 'major_holder_ratio': 35.0, 'per': 0.0, 'pbr': 0.0, 'roe': 0.0, 'debt_ratio': 100.0}
         if is_korean:
             naver_data = get_korean_stock_data(ticker_final)
 
     if df.empty:
-        st.error("🚨 전방 보고: 데이터를 수집할 수 없습니다. 종목 코드를 다시 확인하십시오.")
+        st.error("🚨 데이터를 수집할 수 없습니다. 종목 코드를 다시 확인하십시오.")
     else:
-        # 이평선 데이터 가동
         close_series = df['Close'].squeeze()
         df['EMA5'] = close_series.ewm(span=5, adjust=False).mean()
         df['EMA20'] = close_series.ewm(span=20, adjust=False).mean()
@@ -126,99 +112,107 @@ if ticker_final:
         prev_price = close_series.iloc[-2] if len(close_series) > 1 else current_price
         price_pct = ((current_price - prev_price) / prev_price) * 100
         
-        # 📊 1층: 야광 차트 계기판
+        # 🛡️ 1층: 요약 계기판
+        col1, col2, col3 = st.columns(3)
+        col1.metric("📋 종목 정보", value=f"코드: {ticker_input}")
+        col2.metric("💵 현재 주가", value=f"{current_price:,.0f} 원" if is_korean else f"${current_price:,.2f}", delta=f"{price_pct:.2f}%")
+        
+        # ---------------------------------------------------------------------
+        # 🗂️ 알맹이 완전 노출형 필터 채점 엔진
+        # ---------------------------------------------------------------------
+        filters = {}
+        
+        # 1단: 거래량
+        vol_avg = df['Volume'].tail(5).mean()
+        filters['1단: 돈의 흐름 (거래량)'] = f"✅ 합격 (5일 평균 거래량: {vol_avg:,.0f}주 ➡️ 5만주 기준 초과)" if vol_avg > 50000 else f"❌ 불합격 (5일 평균 거래량: {vol_avg:,.0f}주 ➡️ 자금 유입 저조)"
+        
+        # 2단: 수급
+        if is_etf_or_pref:
+            filters['2단: 기관/외인 쌍끌이'] = f"⚪ 특수면제 (현재 우선주/ETF 모드 가동 중)"
+        else:
+            if is_korean:
+                f_buy = naver_data['foreigner_buy']
+                i_buy = naver_data['institution_buy']
+                if f_buy > 0 or i_buy > 0:
+                    filters['2단: 기관/외인 쌍끌이'] = f"✅ 합격 (최근 5일 외인:{f_buy:+,}주 / 기관:{i_buy:+,}주 수급 유입)"
+                else:
+                    filters['2단: 기관/외인 쌍끌이'] = f"❌ 불합격 (최근 5일 외인:{f_buy:+,}주 / 기관:{i_buy:+,}주 메이저 이탈)"
+            else:
+                inst_held = (info.get('institutionsPercentHeld', 0) or 0) * 100
+                filters['2단: 기관/외인 쌍끌이'] = f"✅ 합격 (기관 지분율: {inst_held:.1f}%)" if inst_held > 20 else f"❌ 불합격 (기관 지분율: {inst_held:.1f}% ➡️ 기준치 20% 미달)"
+                
+        # 3단: 추세 지지선
+        current_ema50 = df['EMA50'].iloc[-1]
+        if current_price >= current_ema50:
+            filters['3단: 추세 지지선'] = f"✅ 합격 (현재가 {current_price:,.0f}원 ➡️ 최후 지지선 {current_ema50:,.0f}원 위 안전구역)"
+        else:
+            filters['3단: 추세 지지선'] = f"❌ 불합격 (현재가 {current_price:,.0f}원 ➡️ 최후 지지선 {current_ema50:,.0f}원 아래 위험구역)"
+        
+        # 4단: EPS 성장률
+        if is_etf_or_pref:
+            filters['4단: EPS 성장률'] = "⚪ 특수면제 (우선주/ETF 밸류에이션 면제 적용)"
+        else:
+            per_val = naver_data['per'] if is_korean else info.get('trailingPE', 0)
+            filters['4단: EPS 성장률'] = f"✅ 합격 (실적 유지 / 현재 PER: {per_val:.2f}배)" if per_val > 0 else "❌ 불합격 (기업 적자 상태 또는 실적 정체)"
+            
+        # 5단: ROE 필터
+        final_roe = naver_data['roe'] if is_korean else ((info.get('returnOnEquity', 0) or 0) * 100)
+        if is_etf_or_pref:
+            filters['5단: ROE 필터'] = f"⚪ 특수면제 (현재 우선주/ETF 모드 적용 중, 수치: {final_roe:.1f}%)"
+        else:
+            filters['5단: ROE 필터'] = f"✅ 합격 (현재 ROE: {final_roe:.1f}% ➡️ 기준치 5% 초과)" if final_roe > 5.0 else f"❌ 불합격 (현재 ROE: {final_roe:.1f}% ➡️ 기준치 5% 미달)"
+            
+        # 6단: 부채비율 및 밸류에이션
+        final_debt = naver_data['debt_ratio'] if is_korean else (info.get('debtToEquity', 100) or 100)
+        if is_etf_or_pref:
+            filters['6단: 밸류에이션'] = f"⚪ 특수면제 (현재 우선주/ETF 모드 적용 중, 부채: {final_debt:.1f}%)"
+        elif is_financial:
+            filters['6단: 밸류에이션'] = f"✅ 합격 (금융주 부채 한도 무제한 면제 조항 적용, 부채: {final_debt:.1f}%)"
+        else:
+            filters['6단: 밸류에이션'] = f"✅ 합격 (현재 부채비율: {final_debt:.1f}% ➡️ 기준치 180% 이하 안전권)" if final_debt < 180 else f"❌ 불합격 (현재 부채비율: {final_debt:.1f}% ➡️ 기준치 180% 초과 리스크)"
+            
+        # 7단: 거래 에너지
+        last_vol = df['Volume'].iloc[-1]
+        prev_vol = df['Volume'].iloc[-2]
+        filters['7단: 거래 에너지'] = f"✅ 합격 (직전 거래량 {prev_vol:,.0f}주 ➡️ 현재 거래량 {last_vol:,.0f}주로 에너지 상승)" if last_vol >= prev_vol else f"🔺 경고 (직전 거래량 {prev_vol:,.0f}주 ➡️ 현재 거래량 {last_vol:,.0f}주로 에너지 감소)"
+        
+        # 8단: 대주주 지분율
+        major_holder = naver_data['major_holder_ratio'] if is_korean else ((info.get('heldPercentInsiders', 0.2) or 0.2) * 100)
+        if is_etf_or_pref:
+            filters['8단: 대주주 지분'] = f"⚪ 특수면제 (현재 우선주/ETF 모드 적용 중, 지분율: {major_holder:.1f}%)"
+        else:
+            filters['8단: 대주주 지분'] = f"✅ 합격 (대주주 지분율: {major_holder:.1f}% ➡️ 기준치 20% 안정권)" if major_holder > 20 else f"❌ 불합격 (대주주 지분율: {major_holder:.1f}% ➡️ 기준치 20% 미달 책임경영 취약)"
+            
+        # 9단: 심리 방어
+        filters['9단: 군중 심리 방어'] = "✅ 합격 (뇌동매매 금지, 줏대 있는 원칙 진입권장)"
+        
+        # 종합 결과 하이라이트
+        fail_count = sum(1 for v in filters.values() if "❌" in v)
+        if fail_count >= 2: col3.error("🚨 최종 신호: 전면 퇴각!!!")
+        elif fail_count == 1: col3.warning("⚡ 최종 신호: 관망/부분진입")
+        else: col3.success("🚀 최종 신호: 진격 매수!")
+        
+        # 📊 2층: 지수 전광판
+        st.markdown("---")
+        st.subheader("📊 실시간 투자 지수 감시계기판")
+        idx_col1, idx_col2, idx_col3, idx_col4 = st.columns(4)
+        idx_col1.metric("📈 실시간 PER", value=f"{naver_data['per']:.2f} 배" if is_korean else f"{info.get('trailingPE', 0):.2f} 배")
+        idx_col2.metric("📉 실시간 PBR", value=f"{naver_data['pbr']:.2f} 배" if is_korean else f"{info.get('priceToBook', 0):.2f} 배")
+        idx_col3.metric("🎯 실시간 ROE", value=f"{final_roe:.1f} %")
+        idx_col4.metric("🏦 부채 비율", value=f"{naver_data['debt_ratio']:.1f} %" if is_korean else f"{info.get('debtToEquity', 0):.1f} %")
+        st.markdown("---")
+
+        # 📊 3층: 차트
         st.subheader("📊 제3단 필터 연동: 실시간 추세 및 최후 지지선 감시창")
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df.index, y=close_series, name='현재가', line=dict(color='#00ffcc', width=2.5)))
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA5'], name='EMA 5', line=dict(color='#ff007f', width=1.5)))
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], name='EMA 20 (세력선)', line=dict(color='#3b82f6', width=2)))
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], name='EMA 50 (오닐수급선)', line=dict(color='#f97316', width=2)))
-        
-        fig.update_layout(template="plotly_dark", height=400, margin=dict(l=20, r=20, t=20, b=20),
-                          legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        fig.update_layout(template="plotly_dark", height=400, margin=dict(l=20, r=20, t=20, b=20))
         st.plotly_chart(fig, use_container_width=True)
         
-        # 🛡️ 2층: 9단 철벽 필터 정밀 검문 구역
+        # 🛡️ 4층: 9단 철벽 필터 정밀 검문소
         st.subheader("🛡️ 은철 개미의 9단 철벽 필터 정밀 검문소")
-        filters = {}
-        
-        # 1단: 거래량
-        vol_avg = df['Volume'].tail(5).mean()
-        filters['1단: 돈의 흐름 (거래량)'] = "✅ 합격" if vol_avg > 50000 else "❌ 불합격"
-        
-        # 2단: 수급
-        if is_etf_or_pref:
-            filters['2단: 기관/외인 쌍끌이'] = "⚪ 특수면제"
-        else:
-            if is_korean and (naver_data['foreigner_buy'] > 0 or naver_data['institution_buy'] > 0):
-                filters['2단: 기관/외인 쌍끌이'] = f"✅ 합격 (네이버 수급 확인)"
-            else:
-                inst_held = info.get('institutionsPercentHeld', 0) or 0
-                filters['2단: 기관/외인 쌍끌이'] = "✅ 합격" if inst_held > 0.2 else "❌ 불합격"
-                
-        # 3단: 추세 지지선
-        current_ema50 = df['EMA50'].iloc[-1]
-        filters['3단: 추세 지지선'] = "✅ 합격" if current_price >= current_ema50 else "❌ 불합격 (위험 구역)"
-        
-        # 4단: EPS 성장률 (안전 제어 처리)
-        if is_etf_or_pref:
-            filters['4단: EPS 성장률'] = "⚪ 특수면제"
-        else:
-            eps_growth = info.get('earningsGrowth', None)
-            if eps_growth is not None:
-                filters['4단: EPS 성장률'] = "✅ 합격" if eps_growth > 0 else "❌ 불합격"
-            else:
-                # 한국 주식 데이터 공백시 네이버 실적으로 우회 판정 (PER이 양수면 합격 처리)
-                filters['4단: EPS 성장률'] = "✅ 합격 (실적 유지)" if naver_data['per'] > 0 else "🔺 대만족 보류 (MTS 교차체크)"
-            
-        # 5단: ROE 필터 (네이버 데이터 전격 매핑!)
-        if is_etf_or_pref:
-            filters['5단: ROE 필터'] = "⚪ 특수면제"
-        else:
-            final_roe = naver_data['roe'] if is_korean else (info.get('returnOnEquity', 0) * 100)
-            filters['5단: ROE 필터'] = f"✅ 합격 (ROE: {final_roe:.1f}%)" if final_roe > 6.0 else f"❌ 불합격 (ROE: {final_roe:.1f}%)"
-            
-        # 6단: 부채비율 및 밸류에이션
-        if is_etf_or_pref:
-            filters['6단: 밸류에이션'] = "⚪ 특수면제"
-        elif is_financial:
-            filters['6단: 밸류에이션'] = "✅ 합격 (금융주 부채 면제)"
-        else:
-            final_debt = naver_data['debt_ratio'] if is_korean else info.get('debtToEquity', 100)
-            filters['6단: 밸류에이션'] = f"✅ 합격 (부채: {final_debt:.1f}%)" if final_debt < 180 else f"❌ 불합격 (부채: {final_debt:.1f}%)"
-            
-        # 7단: 거래 에너지
-        filters['7단: 거래 에너지'] = "✅ 합격" if df['Volume'].iloc[-1] >= df['Volume'].iloc[-2] else "🔺 경고 (에너지 감소)"
-        
-        # 8단: 대주주 지분율
-        if is_etf_or_pref:
-            filters['8단: 대주주 지분'] = "⚪ 특수면제"
-        else:
-            major_holder = naver_data['major_holder_ratio'] if is_korean else (info.get('heldPercentInsiders', 0.2) * 100)
-            filters['8단: 대주주 지분'] = f"✅ 합격 (지분율 {major_holder:.1f}%)" if major_holder > 20 else "❌ 불합격"
-            
-        # 9단: 심리 방어
-        filters['9단: 군중 심리 방어'] = "✅ 합격"
-
-        # 채점 결과 종합 및 계기판 표기
-        fail_count = sum(1 for v in filters.values() if "❌" in v)
-        
-        col1, col2, col3 = st.columns(3)
-        # 종목명 표기
-        col1.metric("종목 정보", value=f"코드: {ticker_input}")
-        col2.metric("현재 주가", value=f"{current_price:,.0f} 원" if is_korean else f"${current_price:,.2f}", delta=f"{price_pct:.2f}%")
-        
-        # 밸류에이션 실시간 지표판 전격 신설!!
-        if is_korean:
-            st.info(f"📊 **[국내 전산망 실시간 밸류에이션]** PER: {naver_data['per']:.2f}배 | PBR: {naver_data['pbr']:.2f}배 | ROE: {naver_data['roe']:.1f}%")
-        
-        if fail_count >= 2:
-            col3.error("🚨 최종 작전 신호: 전면 퇴각!!!")
-        elif fail_count == 1:
-            col3.warning("⚡ 최종 작전 신호: 관망 및 부분 진입")
-        else:
-            col3.success("🚀 최종 작전 신호: 전원 통과! 진격 매수!")
-
-        st.markdown("### 🗂️ 각 필터별 정밀 검문 대장")
         filter_df = pd.DataFrame(list(filters.items()), columns=['검문 항목', '판정 결과'])
         st.table(filter_df)
