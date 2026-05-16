@@ -89,7 +89,7 @@ def get_historical_data(code):
         return None
 
 # --- 대시보드 UI 구동 ---
-st.title("📱 줏대있는 개미의 무결점 종목 선별 시스템")
+st.title("📱 은철 개미의 무결점 종목 선별 시스템")
 
 mode_cols = st.columns(2)
 with mode_cols[0]:
