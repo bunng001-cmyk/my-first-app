@@ -5,7 +5,7 @@ import FinanceDataReader as fdr
 import plotly.graph_objects as go
 import pandas as pd
 
-# 0. 페이지 기본 설정
+# 0. 페이지 기본 설정 (와이드 모드)
 st.set_page_config(layout="wide")
 
 # --- 1. 네이버 증권 데이터 크롤링 ---
@@ -39,7 +39,7 @@ def get_historical_data(code):
         if df.empty: return None
         df = df.tail(100).reset_index()
         
-        # 💡 지수이동평균(EMA) 및 거래량 이평 계산
+        # 지수이동평균(EMA) 및 거래량 이평 계산
         df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
         df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
         df['Vol_Avg20'] = df['Volume'].rolling(window=20).mean() # 20일 평균 거래량
@@ -69,7 +69,7 @@ else:
     vol_avg20 = latest['Vol_Avg20']
     
     # -------------------------------------------------------------
-    # 🧠 [선생님 수정 구간] 데이터와 실시간 연동되는 필터 연산 수식
+    # 🧠 데이터와 실시간 연동되는 필터 연산 수식 구간
     # -------------------------------------------------------------
     
     # 🎯 1. 매매 가격 가이드라인 수식
@@ -98,8 +98,7 @@ else:
         f3_score = 35.0
         f3_desc = "주가가 이평선 아래에 위치한 역배열 추세 (위험)"
         
-    # [필터 4] ★진짜 연동★ S: 거래량 돌파 에너지
-    # 오늘 거래량이 20일 평균 거래량의 몇 배인가를 실시간 연산합니다.
+    # [필터 4] S: 거래량 돌파 에너지 (실시간 연동)
     if today_volume > (vol_avg20 * 2.0):
         f4_score = 95.0
         f4_desc = f"🔥 거래량 폭발! 20일 평균 대비 {(today_volume/vol_avg20):.1f}배 돌파"
@@ -110,8 +109,7 @@ else:
         f4_score = 45.0
         f4_desc = "거래량 침체. 시장 소외 가능성 우려"
 
-    # [필터 9] ★진짜 연동★ Quant: 차트 지지선 확인
-    # 현재 주가가 단기 지지선(EMA20)과 얼마나 가까운지 이격도를 계산하여 지지 여부를 체크합니다.
+    # [필터 9] Quant: 차트 지지선 확인 (실시간 연동)
     disparity = (now_price / ema20) * 100
     if 98 <= disparity <= 102:
         f9_score = 95.0
@@ -123,13 +121,13 @@ else:
         f9_score = 40.0
         f9_desc = f"20일선 지지 붕괴 후 하회 중 (이격도 {disparity:.1f}%)"
 
-    # 나머지 수동 필터 (5~8번은 정성적 원칙이므로 일단 70점 고정, 추후 데이터 확충 가능)
+    # 나머지 정성적/예비 필터 (5~8번)
     f5_score, f5_desc = 70.0, "주도주 섹터 매력도 필터"
     f6_score, f6_desc = 70.0, "메이저 수급 유입 필터"
     f7_score, f7_desc = 70.0, "시장 방향성 위기 감지"
     f8_score, f8_desc = 70.0, "경영진 및 공시 리스크"
 
-    # 🔥 9가지 필터 평균으로 종합 점수 자동 계산
+    # 9가지 필터 평균으로 종합 점수 자동 계산
     total_score = int((f1_score + f2_score + f3_score + f4_score + f5_score + f6_score + f7_score + f8_score + f9_score) / 9)
 
     # -------------------------------------------------------------
@@ -156,7 +154,9 @@ else:
         fig.add_trace(go.Scatter(x=chart_data['Date'], y=chart_data['Close'], name='실제 주가', line=dict(color='black', width=2)))
         fig.add_trace(go.Scatter(x=chart_data['Date'], y=chart_data['EMA20'], name='EMA20', line=dict(color='blue', dash='dot')))
         fig.add_trace(go.Scatter(x=chart_data['Date'], y=chart_data['EMA50'], name='EMA50', line=dict(color='orange')))
-        fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10), legend=orientation="h")
+        
+        # 🛠️ [에러 해결 구간] 문법 오류가 있던 지점을 올바른 dict 구조로 전면 수정했습니다.
+        fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10), legend=dict(orientation="h"))
         st.plotly_chart(fig, use_container_width=True)
         
         st.markdown("---")
