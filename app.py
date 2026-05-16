@@ -1,124 +1,183 @@
-import streamlit as pd
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
+import FinanceDataReader as fdr
 import plotly.graph_objects as go
 import pandas as pd
-import numpy as np
 
-# 페이지 넓게 설정
+# 0. 페이지 기본 설정
 st.set_page_config(layout="wide")
 
-# --- 1. 네이버 증권 데이터 크롤링 함수 ---
-@st.cache_data(ttl=10)  # 10초 동안 데이터 캐싱 (서버 과부하 방지 및 속도 향상)
+# --- 1. 네이버 증권 데이터 크롤링 ---
+@st.cache_data(ttl=10)
 def get_naver_stock_data(code):
     try:
-        # 네이버 금융 모바일/웹 PC 버전 파싱
         url = f"https://finance.naver.com/item/main.naver?code={code}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         res = requests.get(url, headers=headers)
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        # 현재가, 등락률, 거래량 등 추출
-        blind_data = soup.find("div", {"class": "rate_info"}).find("p", {"class": "no_today"})
-        current_price = blind_data.find("span", {"class": "blind"}).text.replace(",", "")
-        
-        # 등락률 및 전일비
-        change_box = soup.find("td", {"class": "first"}).find("span", {"class": "blind"}).text
-        
-        # 시가총액, PER, PBR 등 주요 지표 가져오기
-        aside_aside = soup.find("div", {"class": "aside_invest_info"})
-        per = aside_aside.find("em", {"id": "_per"}).text if aside_aside.find("em", {"id": "_per"}) else "N/A"
-        pbr = aside_aside.find("em", {"id": "_pbr"}).text if aside_aside.find("em", {"id": "_pbr"}) else "N/A"
-        
-        # 종목명
         stock_name = soup.find("div", {"class": "wrap_company"}).find("h2").text
+        current_price = float(soup.find("div", {"class": "rate_info"}).find("p", {"class": "no_today"}).find("span", {"class": "blind"}).text.replace(",", ""))
         
-        return {
-            "name": stock_name,
-            "price": float(current_price),
-            "per": per,
-            "pbr": pbr,
-            "status": "정상"
-        }
-    except Exception as e:
+        aside_aside = soup.find("div", {"class": "aside_invest_info"})
+        per_text = aside_aside.find("em", {"id": "_per"}).text if aside_aside.find("em", {"id": "_per"}) else "0"
+        pbr_text = aside_aside.find("em", {"id": "_pbr"}).text if aside_aside.find("em", {"id": "_pbr"}) else "0"
+        
+        per = float(per_text.replace(",", "")) if per_text != "N/A" else 0.0
+        pbr = float(pbr_text.replace(",", "")) if pbr_text != "N/A" else 0.0
+        
+        return {"name": stock_name, "price": current_price, "per": per, "pbr": pbr}
+    except:
         return None
 
-# --- 2. 대시보드 상단 검색창 ---
-st.title("📈 네이버 증권 연동 퀀트 대시보드")
-stock_code = st.text_input("종목코드를 입력하세요 (예: 삼성전자 005930, SK하이닉스 000660)", value="005930")
+# --- 2. 실제 주가 데이터 및 이평선 계산 ---
+@st.cache_data(ttl=60)
+def get_historical_data(code):
+    try:
+        df = fdr.DataReader(code)
+        if df.empty: return None
+        df = df.tail(100).reset_index()
+        
+        # 💡 지수이동평균(EMA) 및 거래량 이평 계산
+        df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
+        df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
+        df['Vol_Avg20'] = df['Volume'].rolling(window=20).mean() # 20일 평균 거래량
+        return df
+    except:
+        return None
 
-# 데이터 로드
-data = get_naver_stock_data(stock_code)
+# --- 대시보드 UI 시작 ---
+st.title("📱 줏대있는 개미의 모바일 철벽 필터 시스템")
+stock_code = st.text_input("종목코드를 입력하세요", value="005930")
 
-if data is None:
-    st.error("올바른 종목코드가 아니거나 데이터를 가져오는데 실패했습니다. 코드를 확인해 주세요.")
+basic_data = get_naver_stock_data(stock_code)
+chart_data = get_historical_data(stock_code)
+
+if basic_data is None or chart_data is None:
+    st.error("종목코드를 확인하시거나 잠시 후 다시 시도해주세요.")
 else:
-    # --- 3. 실시간 상단 지표 배치 ---
-    st.subheader(f"📊 {data['name']} ({stock_code}) 분석 결과")
+    # 데이터 변수 바인딩
+    now_price = basic_data['price']
+    now_per = basic_data['per']
+    now_pbr = basic_data['pbr']
     
-    top_cols = st.columns(4)
-    with top_cols[0]:
-        st.metric(label="실시간 현재가", value=f"{int(data['price']):,} 원")
-    with top_cols[1]:
-        st.metric(label="네이버 PER", value=f"{data['per']} 배")
-    with top_cols[2]:
-        st.metric(label="네이버 PBR", value=f"{data['pbr']} 배")
-    with top_cols[3]:
-        st.metric(label="데이터 갱신", value="실시간 (10초 주기)")
+    latest = chart_data.iloc[-1]
+    ema20 = latest['EMA20']
+    ema50 = latest['EMA50']
+    today_volume = latest['Volume']
+    vol_avg20 = latest['Vol_Avg20']
+    
+    # -------------------------------------------------------------
+    # 🧠 [선생님 수정 구간] 데이터와 실시간 연동되는 필터 연산 수식
+    # -------------------------------------------------------------
+    
+    # 🎯 1. 매매 가격 가이드라인 수식
+    buy_target = now_price * 0.95        
+    stop_loss = buy_target * 0.95        
+    profit_target = now_price * 1.10     
 
-    st.markdown("---")
+    # 📊 2. 9가지 철벽 필터 조건 실시간 연산
+    
+    # [필터 1] C: 분기 EPS 성장성 (PER 기준 연동)
+    f1_score = 90.0 if 0 < now_per < 15 else 70.0 if now_per < 25 else 40.0
+    f1_desc = f"실시간 PER {now_per}배 기준 정량 점수"
+    
+    # [필터 2] A: 연간 ROE 실적 (PBR 기준 연동)
+    f2_score = 90.0 if 0 < now_pbr < 1.5 else 60.0 if now_pbr < 3.0 else 30.0
+    f2_desc = f"실시간 PBR {now_pbr}배 기준 정량 점수"
+    
+    # [필터 3] N: 신고가 및 추세 정배열 (이평선 연동)
+    if now_price > ema20 > ema50:
+        f3_score = 95.0
+        f3_desc = "주가가 20일, 50일선 위에 위치한 완벽한 정배열"
+    elif now_price > ema20:
+        f3_score = 70.0
+        f3_desc = "20일선 위로 반등했으나 중기 이평선 저항 확인 필요"
+    else:
+        f3_score = 35.0
+        f3_desc = "주가가 이평선 아래에 위치한 역배열 추세 (위험)"
+        
+    # [필터 4] ★진짜 연동★ S: 거래량 돌파 에너지
+    # 오늘 거래량이 20일 평균 거래량의 몇 배인가를 실시간 연산합니다.
+    if today_volume > (vol_avg20 * 2.0):
+        f4_score = 95.0
+        f4_desc = f"🔥 거래량 폭발! 20일 평균 대비 {(today_volume/vol_avg20):.1f}배 돌파"
+    elif today_volume > vol_avg20:
+        f4_score = 75.0
+        f4_desc = "거래량 양호. 평균 거래량 상회 중"
+    else:
+        f4_score = 45.0
+        f4_desc = "거래량 침체. 시장 소외 가능성 우려"
 
-    # --- 4. 메인 레이아웃 (좌측 요약 / 우측 차트 및 상세 점수) ---
+    # [필터 9] ★진짜 연동★ Quant: 차트 지지선 확인
+    # 현재 주가가 단기 지지선(EMA20)과 얼마나 가까운지 이격도를 계산하여 지지 여부를 체크합니다.
+    disparity = (now_price / ema20) * 100
+    if 98 <= disparity <= 102:
+        f9_score = 95.0
+        f9_desc = f"🎯 핵심 지지선 근접! 20일선 이격도 {disparity:.1f}%로 강력한 지지대 배치"
+    elif disparity > 102:
+        f9_score = 65.0
+        f9_desc = f"20일선과 이격이 다소 벌어짐 (이격도 {disparity:.1f}%), 추격매수 유의"
+    else:
+        f9_score = 40.0
+        f9_desc = f"20일선 지지 붕괴 후 하회 중 (이격도 {disparity:.1f}%)"
+
+    # 나머지 수동 필터 (5~8번은 정성적 원칙이므로 일단 70점 고정, 추후 데이터 확충 가능)
+    f5_score, f5_desc = 70.0, "주도주 섹터 매력도 필터"
+    f6_score, f6_desc = 70.0, "메이저 수급 유입 필터"
+    f7_score, f7_desc = 70.0, "시장 방향성 위기 감지"
+    f8_score, f8_desc = 70.0, "경영진 및 공시 리스크"
+
+    # 🔥 9가지 필터 평균으로 종합 점수 자동 계산
+    total_score = int((f1_score + f2_score + f3_score + f4_score + f5_score + f6_score + f7_score + f8_score + f9_score) / 9)
+
+    # -------------------------------------------------------------
+    # 🖥️ 화면 레이아웃 배치
+    # -------------------------------------------------------------
+    st.subheader(f"📊 {basic_data['name']} ({stock_code}) 모바일 계측 결과")
+    
     left_col, right_col = st.columns([1, 3])
-
-    # 좌측 영역: 목표 매매 전략 가격 계산 (현재가 기반 임시 계산식 로직 적용)
+    
     with left_col:
-        st.subheader("🎯 매매 전략 가이드")
         with st.container(border=True):
-            st.markdown("### **종합 점수**")
-            # 밸류에이션 기반 정량 스코어 임시 산정 (실제 수식 대입 가능)
-            score = 85 if data['per'] != "N/A" and float(data['per'].replace(",","")) < 20 else 65
-            st.markdown(f"<h1 style='color: #2ECC71; text-align: center; font-size: 55px;'>{score} <span style='font-size:20px;'>점</span></h1>", unsafe_allow_html=True)
+            st.markdown("### **철벽 필터 종합 점수**")
+            st.markdown(f"<h1 style='color: #2ECC71; text-align: center; font-size: 60px;'>{total_score} <span style='font-size:24px;'>점</span></h1>", unsafe_allow_html=True)
+            st.markdown(f"**현재가:** {int(now_price):,}원")
             
             st.markdown("---")
-            # 매수가/손절가 밴드 설정 예시 (현재가 기준 ±5% 등)
-            st.success(f"기준 매수가: {int(data['price'] * 0.97):,}원")
-            st.error(f"철벽 손절가: {int(data['price'] * 0.93):,}원")
-            st.info(f"1차 목표가: {int(data['price'] * 1.10):,}원")
-
-    # 우측 영역: 가상 차트 및 백테스팅/CAN SLIM 팩터 스코어
+            st.markdown("### **🎯 매매 철칙 가격**")
+            st.success(f"대기 매수가: {int(buy_target):,}원")
+            st.error(f"철벽 손절가: {int(stop_loss):,}원")
+            st.info(f"목표 익절가: {int(profit_target):,}원")
+            
     with right_col:
-        st.subheader("📈 주가 추세 분석 (EMA 20/50)")
-        
-        # 가상 주가 데이터 플로팅 (실제 종가지표 연동 전 뼈대용)
-        dates = pd.date_range(end=pd.Timestamp.now(), periods=60)
-        prices = np.linspace(data['price']*0.9, data['price'], 60) + np.random.normal(0, data['price']*0.02, 60)
-        df_chart = pd.DataFrame({'Date': dates, 'Close': prices})
-        
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df_chart['Date'], y=df_chart['Close'], name='현재가 추이', line=dict(color='black')))
-        fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10))
+        fig.add_trace(go.Scatter(x=chart_data['Date'], y=chart_data['Close'], name='실제 주가', line=dict(color='black', width=2)))
+        fig.add_trace(go.Scatter(x=chart_data['Date'], y=chart_data['EMA20'], name='EMA20', line=dict(color='blue', dash='dot')))
+        fig.add_trace(go.Scatter(x=chart_data['Date'], y=chart_data['EMA50'], name='EMA50', line=dict(color='orange')))
+        fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10), legend=orientation="h")
         st.plotly_chart(fig, use_container_width=True)
         
         st.markdown("---")
-        st.subheader("📊 핵심 9가지 철벽 필터 상태")
         
         grid_cols = st.columns(3)
-        
-        # 네이버 실시간 데이터 수치를 팩터 스코어 카드에 바인딩
-        factors = [
-            {"title": "C: 분기 EPS 성장성", "score": 75.0, "desc": "최근 분기 실적 가속도 검증 완료."},
-            {"title": "A: 연간 ROE 상태", "score": 80.0, "desc": "수익성 지표가 가이드라인을 충족합니다."},
-            {"title": "N: 신고가 및 매물대", "score": 55.0, "desc": "직전 고점 돌파 후 지지선 확인 중."},
-            {"title": "S: 거래량 & 공급 에너지", "score": 65.0, "desc": "수급 유입 강도 평이한 수준 유지."},
-            {"title": "L: 주도주 및 섹터 매력도", "score": 90.0, "desc": "동일 업종 내 최상위 모멘텀 보유."},
-            {"title": "I: 메이저 기관/외인 수급", "score": 72.0, "desc": "최근 5일간 외인 순매수 우위 흐름."}
+        all_filters = [
+            {"title": "C: 분기 EPS 성장성", "score": f1_score, "desc": f1_desc},
+            {"title": "A: 연간 ROE 실적", "score": f2_score, "desc": f2_desc},
+            {"title": "N: 신고가 및 추세 정배열", "score": f3_score, "desc": f3_desc},
+            {"title": "S: 거래량 돌파 에너지", "score": f4_score, "desc": f4_desc},
+            {"title": "L: 주도주 대장 여부", "score": f5_score, "desc": f5_desc},
+            {"title": "I: 메이저 수급 (기관/외인)", "score": f6_score, "desc": f6_desc},
+            {"title": "M: 시장 방향성 위기 감지", "score": f7_score, "desc": f7_desc},
+            {"title": "Quant: 경영진 및 공시 리스크", "score": f8_score, "desc": f8_desc},
+            {"title": "Quant: 차트 지지선 확인", "score": f9_score, "desc": f9_desc},
         ]
         
-        for idx, factor in enumerate(factors):
+        for idx, item in enumerate(all_filters):
             with grid_cols[idx % 3]:
                 with st.container(border=True):
-                    st.markdown(f"**{factor['title']}**")
-                    st.markdown(f"<h3 style='color: #E67E22; margin:0;'>{factor['score']} 점</h3>", unsafe_allow_html=True)
-                    st.caption(factor['desc'])
+                    st.markdown(f"**{item['title']}**")
+                    color = "#2ECC71" if item['score'] >= 80 else "#E67E22" if item['score'] >= 60 else "#C0392B"
+                    st.markdown(f"<h3 style='color: {color}; margin:0;'>{item['score']} 점</h3>", unsafe_allow_html=True)
+                    st.caption(item['desc'])
