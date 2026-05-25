@@ -26,6 +26,12 @@ def safe_float(text):
     except Exception:
         return 0.0
 
+def get_any_key(d, keys):
+    for k in keys:
+        if k in d and d[k] is not None:
+            return str(d[k])
+    return '0'
+
 # ─────────────────────────────────────────────
 # 1. 거시 지표 (NaN 폭탄 방어 탑재)
 # ─────────────────────────────────────────────
@@ -42,7 +48,6 @@ def get_macro_indicators():
         close_curr = df['Close'].iloc[-1]
         close_prev = df['Close'].iloc[-2]
         
-        # 💡 [방어] 야후 파이낸스 NaN 폭탄 방어막
         if pd.isna(close_curr): close_curr = 0.0
         if pd.isna(close_prev) or close_prev == 0: 
             chg_pct = 0.0
@@ -62,7 +67,7 @@ def get_macro_indicators():
     return result
 
 # ─────────────────────────────────────────────
-# 2. 네이버 증권 스크래핑 (글자 깨짐 방어)
+# 2. 네이버 증권 듀얼 엔진 (모바일 JSON API ➔ PC HTML 폴백)
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=60)
 def get_naver_stock_data(code, run_mode):
@@ -71,65 +76,97 @@ def get_naver_stock_data(code, run_mode):
         'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
     }
     warnings_list = []
+    
     stock_name, current_price, per, pbr, industry_per = "종목명 불가", 0.0, 0.0, 0.0, 0.0
+    net_foreigner, net_institution, target_date_str = 0.0, 0.0, ""
+    
     session = requests.Session()
 
+    # 💡 [엔진 1] 모바일 JSON API 정밀 타격
     try:
-        url = f"https://finance.naver.com/item/main.naver?code={code}"
-        res = session.get(url, headers=headers, timeout=10)
-        # 💡 [수술 1] 네이버 인코딩 변화 대응: euc-kr 강제 지정 삭제하고 content로 파싱
-        soup = BeautifulSoup(res.content, 'html.parser')
+        # 1-1. 기본 정보 (주가, PER 등)
+        url_basic = f"https://m.stock.naver.com/api/stock/{code}/basic"
+        res_basic = session.get(url_basic, headers=headers, timeout=5)
+        if res_basic.status_code == 200:
+            data = res_basic.json()
+            stock_name    = data.get('stockName', '종목명 불가')
+            current_price = safe_float(data.get('closePrice', '0'))
+            per           = safe_float(data.get('per', '0'))
+            pbr           = safe_float(data.get('pbr', '0'))
+            industry_per  = safe_float(data.get('cnsPer', '0'))
+
+        # 1-2. 투자자 매매동향 (메이저 수급)
+        url_inv = f"https://m.stock.naver.com/api/stock/{code}/investor/days"
+        res_inv = session.get(url_inv, headers=headers, timeout=5)
+        if res_inv.status_code == 200:
+            inv_data = res_inv.json()
+            items = inv_data if isinstance(inv_data, list) else inv_data.get('items', [])
+            if items:
+                target_idx = 1 if run_mode == "장중 (전일 확정 데이터 조회)" else 0
+                if target_idx < len(items):
+                    t_item = items[target_idx]
+                    target_date_str = str(t_item.get('localDate', t_item.get('bizdate', '')))
+                    
+                    net_inst_str = get_any_key(t_item, ['institutionalNetBuyVol', 'instPureBuyQuant', 'instNetBuyVol'])
+                    net_frgn_str = get_any_key(t_item, ['foreignNetBuyVol', 'frgnPureBuyQuant', 'foreignNetBuyQuant'])
+                    
+                    net_institution = safe_float(net_inst_str)
+                    net_foreigner   = safe_float(net_frgn_str)
     except Exception as e:
-        st.error(f"네이버 증권 메인 페이지 접속 실패 (해외 IP 차단 의심): {e}")
-        return None
+        warnings_list.append(f"모바일 JSON API 에러 (PC 폴백 가동 예정): {e}")
 
-    try:
-        wrap = soup.find("div", {"class": "wrap_company"})
-        stock_name = wrap.find("h2").text.strip() if wrap else "종목명 불가"
-    except Exception as e: warnings_list.append(f"종목명 파싱 실패: {e}")
+    # 💡 [엔진 2] 보완 완벽 수술: 기본 정보 및 수급 데이터 누락 시 PC HTML 크롤링으로 자동 우회
+    if current_price == 0.0 or stock_name == "종목명 불가" or not target_date_str:
+        try:
+            url = f"https://finance.naver.com/item/main.naver?code={code}"
+            res = session.get(url, headers=headers, timeout=5)
+            soup = BeautifulSoup(res.content, 'html.parser')
 
-    try:
-        rate_info = soup.find("div", {"class": "rate_info"})
-        no_today = rate_info.find("p", {"class": "no_today"}) if rate_info else None
-        blind = no_today.find("span", {"class": "blind"}) if no_today else None
-        current_price = safe_float(blind.text) if blind else 0.0
-    except Exception as e: warnings_list.append(f"현재가 파싱 실패: {e}")
+            wrap = soup.find("div", {"class": "wrap_company"})
+            if wrap: stock_name = wrap.find("h2").text.strip()
+            
+            rate_info = soup.find("div", {"class": "rate_info"})
+            if rate_info:
+                blind = rate_info.find("span", {"class": "blind"})
+                if blind: current_price = safe_float(blind.text)
+                
+            aside = soup.find("div", {"class": "aside_invest_info"})
+            if aside:
+                per_e, pbr_e = aside.find("em", {"id": "_per"}), aside.find("em", {"id": "_pbr"})
+                if per_e: per = safe_float(per_e.text)
+                if pbr_e: pbr = safe_float(pbr_e.text)
+                
+            ind_table = soup.find("table", {"summary": "동일업종 PER 정보"})
+            if ind_table and ind_table.find("em"): industry_per = safe_float(ind_table.find("em").text)
+            
+            sub_url = f"https://finance.naver.com/item/frgn.naver?code={code}"
+            sub_res = session.get(sub_url, headers=headers, timeout=5)
+            sub_soup = BeautifulSoup(sub_res.content, 'html.parser')
 
-    try:
-        aside = soup.find("div", {"class": "aside_invest_info"})
-        if aside:
-            per_elem, pbr_elem = aside.find("em", {"id": "_per"}), aside.find("em", {"id": "_pbr"})
-            per, pbr = safe_float(per_elem.text) if per_elem else 0.0, safe_float(pbr_elem.text) if pbr_elem else 0.0
-    except Exception as e: warnings_list.append(f"PER/PBR 파싱 실패: {e}")
+            frgn_table = sub_soup.find("table", {"summary": "외국인 기관 매매동향 연속 정보"})
+            rows = frgn_table.find_all("tr") if frgn_table else []
+            t_idx = 1 if run_mode == "장중 (전일 확정 데이터 조회)" else 0
+            v_count = 0
+            
+            for row in rows:
+                tds = row.find_all("td")
+                if len(tds) >= 7:
+                    if v_count == t_idx:
+                        target_date_str = tds[0].text.strip()
+                        net_institution = safe_float(tds[5].text)
+                        net_foreigner = safe_float(tds[6].text)
+                        break
+                    v_count += 1
+        except Exception as e:
+            warnings_list.append(f"PC 웹 폴백 크롤링 최종 실패: {e}")
 
-    try:
-        ind_table = soup.find("table", {"summary": "동일업종 PER 정보"})
-        industry_per = safe_float(ind_table.find("em").text) if ind_table and ind_table.find("em") else 0.0
-    except Exception as e: warnings_list.append(f"업종 PER 파싱 실패: {e}")
+    # 💡 [핵심 수술] 차트 매칭을 위한 날짜 포맷 규격 정상화 (무조건 YYYY.MM.DD 변환)
+    if target_date_str:
+        clean_date = target_date_str.replace("-", "").replace(".", "").strip()
+        if len(clean_date) == 8 and clean_date.isdigit():
+            target_date_str = f"{clean_date[:4]}.{clean_date[4:6]}.{clean_date[6:]}"
 
-    net_foreigner, net_institution, target_date_str = 0.0, 0.0, ""
-    try:
-        sub_url = f"https://finance.naver.com/item/frgn.naver?code={code}"
-        sub_res = session.get(sub_url, headers=headers, timeout=10)
-        sub_soup = BeautifulSoup(sub_res.content, 'html.parser')
-
-        frgn_table = sub_soup.find("table", {"summary": "외국인 기관 매매동향 연속 정보"})
-        rows = frgn_table.find_all("tr") if frgn_table else []
-        target_row_index = 1 if run_mode == "장중 (전일 확정 데이터 조회)" else 0
-        valid_row_count = 0
-
-        for row in rows:
-            tds = row.find_all("td")
-            if len(tds) >= 7:
-                if valid_row_count == target_row_index:
-                    target_date_str = tds[0].text.strip()
-                    net_institution = safe_float(tds[5].text)
-                    net_foreigner = safe_float(tds[6].text)
-                    break
-                valid_row_count += 1
-    except Exception as e: warnings_list.append(f"외국인/기관 수급 페이지 접속/파싱 실패: {e}")
-
-    if warnings_list: st.warning("네이버 파싱 경고: " + " | ".join(warnings_list))
+    if warnings_list: st.warning("⚠️ 데이터 동기화 알림: " + " | ".join(warnings_list[:1]))
 
     return {
         "name": stock_name, "price": current_price, "per": per, "pbr": pbr,
@@ -170,7 +207,6 @@ def get_dart_fundamentals(api_key, stock_code):
 
                 data = res['list']
                 
-                # 💡 [수술 2] 스마트 키워드 검색 엔진 탑재 (ROE 0.0% 폭탄 제거)
                 def get_val(keywords):
                     for item in data:
                         clean_nm = item['account_nm'].replace(" ", "")
@@ -178,11 +214,11 @@ def get_dart_fundamentals(api_key, stock_code):
                             return safe_float(item['thstrm_amount'])
                     return 0.0
 
-                revenue    = get_val(['매출액', '영업수익'])
-                op_income  = get_val(['영업이익'])
-                equity     = get_val(['자본총계'])
+                revenue     = get_val(['매출액', '영업수익'])
+                op_income   = get_val(['영업이익'])
+                equity      = get_val(['자본총계'])
                 liabilities = get_val(['부채총계'])
-                net_income = get_val(['순이익', '당기순이익']) # 스마트 검색
+                net_income  = get_val(['순이익', '당기순이익'])
 
                 return {
                     "year": year,
@@ -241,7 +277,6 @@ st.title("📱 주식저장소 개미의 1차 퀀트 스크리너")
 macro_data = get_macro_indicators()
 if macro_data:
     m_cols = st.columns(4)
-    # NaN 방어 출력
     kospi_v, kospi_c = macro_data['kospi']
     sp500_v, sp500_c = macro_data['sp500']
     usd_v, usd_c     = macro_data['usd_krw']
@@ -268,7 +303,7 @@ chart_data = get_historical_data(stock_code)
 dart_data  = get_dart_fundamentals(DART_API_KEY, stock_code)
 
 if basic_data is None:
-    st.error("네이버 증권 통신 실패. 네트워크 연결 또는 상장폐지 여부를 확인해 주세요.")
+    st.error("데이터 서버 통신 실패. 네트워크 상태나 종목코드를 확인해 주세요.")
     st.stop()
 
 if dart_data: st.info(f"✅ DART 재무 엑스레이 연결 성공 | {dart_data['year']}년 {dart_data['acnt_type']} 재무제표 기준")
@@ -519,5 +554,5 @@ with right_col:
                     with st.container(border=True):
                         st.markdown(f"**{item['title']}**")
                         color = "#2ECC71" if item['score'] >= 80 else "#F1C40F" if item['score'] >= 50 else "#E74C3C"
-                        st.markdown(f"<h3 style='color:{color};margin:0;'>{item['score']} 점</h3>", unsafe_allow_html=True)
+                        st.markdown(f"<h3 style='color:{color};margin:0;'>{int(item['score'])} 점</h3>", unsafe_allow_html=True)
                         st.caption(item['desc'])
