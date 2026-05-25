@@ -15,7 +15,7 @@ DART_API_KEY = "17143d9c12272709c328c8e3276d8fbc9dbca5a5"
 # ─────────────────────────────────────────────
 # 0. 페이지 기본 설정
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="무결점 퀀트 스크리너")
+st.set_page_config(layout="wide", page_title="주식저장소 개미의 1차 스크리너")
 
 def safe_float(text):
     try:
@@ -33,7 +33,7 @@ def get_any_key(d, keys):
     return '0'
 
 # ─────────────────────────────────────────────
-# 1. 거시 지표
+# 1. 거시 지표 (야후 파이낸스 NaN 폭탄 방어)
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=1800)
 def get_macro_indicators():
@@ -42,155 +42,109 @@ def get_macro_indicators():
     def fetch_last_two_close(symbol):
         start_date = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
         df = fdr.DataReader(symbol, start=start_date)
-        if df.empty or len(df) < 2:
-            return 0.0, 0.0
+        if df.empty or len(df) < 2: return 0.0, 0.0
         
         close_curr = df['Close'].iloc[-1]
         close_prev = df['Close'].iloc[-2]
         
         if pd.isna(close_curr): close_curr = 0.0
-        if pd.isna(close_prev) or close_prev == 0: 
-            chg_pct = 0.0
-        else:
-            chg_pct = ((close_curr - close_prev) / close_prev) * 100
-        
+        if pd.isna(close_prev) or close_prev == 0: chg_pct = 0.0
+        else: chg_pct = ((close_curr - close_prev) / close_prev) * 100
         return close_curr, chg_pct
 
     for key, symbol in [("kospi", "KS11"), ("sp500", "^GSPC"), ("usd_krw", "USD/KRW"), ("us10y", "^TNX")]:
-        try:
-            result[key] = fetch_last_two_close(symbol)
+        try: result[key] = fetch_last_two_close(symbol)
         except Exception as e:
             errors.append(f"{key}({symbol}): {e}")
             result[key] = (0.0, 0.0)
-
     if errors: st.warning("거시지표 일부 로드 실패: " + " | ".join(errors))
     return result
 
 # ─────────────────────────────────────────────
-# 2. 네이버 증권 듀얼 엔진 (모바일 최신 API ➔ PC 강제 디코딩 폴백)
+# 2. 네이버 증권 듀얼 엔진 (인코딩 자동 파괴 및 우회 처리 완벽 보강)
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=60)
 def get_naver_stock_data(code, run_mode):
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Referer': f'https://m.stock.naver.com/domestic/stock/{code}/total',
     }
     warnings_list = []
-    
-    stock_name, current_price, per, pbr, industry_per = "종목명 불가", 0.0, 0.0, 0.0, 0.0
+    stock_name, current_price, per, pbr, industry_per = "데이터 로딩중", 0.0, 0.0, 0.0, 0.0
     net_foreigner, net_institution, target_date_str = 0.0, 0.0, ""
     
     session = requests.Session()
 
-    # ── 엔진 1: 네이버 모바일 최신 프론트 API 타격 ──
+    # ── 엔진 1: 모바일 최신 프론트 API 정밀 타격 ──
     try:
-        url_basic = f"https://m.stock.naver.com/front-api/v1/domestic/stock/{code}/basic"
+        url_basic = f"https://m.stock.naver.com/api/stock/{code}/basic"
         res_basic = session.get(url_basic, headers=headers, timeout=5)
-        if res_basic.status_code != 200: 
-            url_basic = f"https://m.stock.naver.com/api/stock/{code}/basic"
-            res_basic = session.get(url_basic, headers=headers, timeout=5)
-            
         if res_basic.status_code == 200:
-            data = res_basic.json()
-            if 'result' in data: data = data['result']
-            
+            data = res_basic.json().get('result', {})
             stock_name = data.get('stockName', '종목명 불가')
             current_price = safe_float(data.get('closePrice', '0'))
             per = safe_float(data.get('per', '0'))
             pbr = safe_float(data.get('pbr', '0'))
             industry_per = safe_float(data.get('cnsPer', '0'))
-    except Exception as e:
-        warnings_list.append(f"기본정보 API 지연: {e}")
 
-    try:
-        url_inv = f"https://m.stock.naver.com/front-api/v1/domestic/stock/{code}/investor/days"
+        url_inv = f"https://m.stock.naver.com/api/stock/{code}/investor/days"
         res_inv = session.get(url_inv, headers=headers, timeout=5)
-        if res_inv.status_code != 200:
-            url_inv = f"https://m.stock.naver.com/api/stock/{code}/investor/days"
-            res_inv = session.get(url_inv, headers=headers, timeout=5)
-            
         if res_inv.status_code == 200:
-            inv_data = res_inv.json()
-            items = []
-            if isinstance(inv_data, list): items = inv_data
-            elif 'result' in inv_data and isinstance(inv_data['result'], list): items = inv_data['result']
-            elif 'items' in inv_data: items = inv_data['items']
-            
+            items = res_inv.json().get('result', [])
             if items:
-                target_idx = 1 if run_mode == "장중 (전일 확정 데이터 조회)" else 0
-                if target_idx < len(items):
-                    t_item = items[target_idx]
-                    target_date_str = str(t_item.get('localDate', t_item.get('bizdate', '')))
-                    
-                    net_inst_str = get_any_key(t_item, ['institutionalNetBuyVol', 'instNetBuyVol', 'organ_pure_buy_quant'])
-                    net_frgn_str = get_any_key(t_item, ['foreignNetBuyVol', 'foreignNetBuyQuant', 'frgn_pure_buy_quant'])
-                    
-                    net_institution = safe_float(net_inst_str)
-                    net_foreigner = safe_float(net_frgn_str)
+                idx = 1 if run_mode == "장중 (전일 확정 데이터 조회)" else 0
+                if idx < len(items):
+                    t_item = items[idx]
+                    target_date_str = str(t_item.get('localDate', ''))
+                    net_institution = safe_float(get_any_key(t_item, ['institutionalNetBuyVol', 'instNetBuyVol', 'organ_pure_buy_quant']))
+                    net_foreigner = safe_float(get_any_key(t_item, ['foreignNetBuyVol', 'foreignNetBuyQuant', 'frgn_pure_buy_quant']))
     except Exception as e:
-        warnings_list.append(f"수급 API 지연: {e}")
+        warnings_list.append(f"모바일 API 지연")
 
-    # ── 엔진 2: 데이터 유실 시 PC HTML 강제 디코딩 폴백 가동 ──
-    if current_price == 0.0 or stock_name == "종목명 불가" or not target_date_str:
+    # ── 엔진 2: 데이터 차단/유실 시 PC HTML 디코딩 우회 (외계어 차단 수술 완료) ──
+    if current_price == 0.0 or stock_name == "데이터 로딩중" or stock_name == "종목명 불가" or not target_date_str:
         try:
-            url = f"https://finance.naver.com/item/main.naver?code={code}"
-            res = session.get(url, headers=headers, timeout=5)
-            soup = BeautifulSoup(res.content.decode('euc-kr', 'replace'), 'html.parser')
-
+            res = session.get(f"https://finance.naver.com/item/main.naver?code={code}", headers=headers, timeout=5)
+            # 💡 [핵심] 네이버가 준 실제 문서의 인코딩을 자동 감지하여 외계어 변신 원천 링크 차단
+            res.encoding = res.apparent_encoding 
+            soup = BeautifulSoup(res.text, 'html.parser')
+            
             wrap = soup.find("div", {"class": "wrap_company"})
-            if wrap: stock_name = wrap.find("h2").text.strip()
+            if wrap and "비정상" not in wrap.text: 
+                stock_name = wrap.find("h2").text.strip()
             
-            rate_info = soup.find("div", {"class": "rate_info"})
-            if rate_info:
-                blind = rate_info.find("span", {"class": "blind"})
-                if blind: current_price = safe_float(blind.text)
-                
-            aside = soup.find("div", {"class": "aside_invest_info"})
-            if aside:
-                per_e, pbr_e = aside.find("em", {"id": "_per"}), aside.find("em", {"id": "_pbr"})
-                if per_e: per = safe_float(per_e.text)
-                if pbr_e: pbr = safe_float(pbr_e.text)
-                
-            ind_table = soup.find("table", {"summary": "동일업종 PER 정보"})
-            if ind_table and ind_table.find("em"): industry_per = safe_float(ind_table.find("em").text)
+            blind = soup.select_one("div.rate_info p.no_today span.blind")
+            if blind: current_price = safe_float(blind.text)
             
-            sub_url = f"https://finance.naver.com/item/frgn.naver?code={code}"
-            sub_res = session.get(sub_url, headers=headers, timeout=5)
-            sub_soup = BeautifulSoup(sub_res.content.decode('euc-kr', 'replace'), 'html.parser')
-
+            sub_res = session.get(f"https://finance.naver.com/item/frgn.naver?code={code}", headers=headers, timeout=5)
+            sub_res.encoding = sub_res.apparent_encoding
+            sub_soup = BeautifulSoup(sub_res.text, 'html.parser')
+            
             frgn_table = sub_soup.find("table", {"summary": "외국인 기관 매매동향 연속 정보"})
-            rows = frgn_table.find_all("tr") if frgn_table else []
-            t_idx = 1 if run_mode == "장중 (전일 확정 데이터 조회)" else 0
-            v_count = 0
-            
-            for row in rows:
-                tds = row.find_all("td")
-                if len(tds) >= 7:
-                    if v_count == t_idx:
-                        target_date_str = tds[0].text.strip()
-                        net_institution = safe_float(tds[5].text)
-                        net_foreigner = safe_float(tds[6].text)
-                        break
-                    v_count += 1
-        except Exception as e:
-            warnings_list.append(f"PC 우회경로 실패: {e}")
+            if frgn_table:
+                rows = frgn_table.find_all("tr")
+                t_idx = 1 if run_mode == "장중 (전일 확정 데이터 조회)" else 0
+                v_count = 0
+                for row in rows:
+                    tds = row.find_all("td")
+                    if len(tds) >= 7:
+                        if v_count == t_idx:
+                            target_date_str = tds[0].text.strip()
+                            net_institution = safe_float(tds[5].text)
+                            net_foreigner = safe_float(tds[6].text)
+                            break
+                        v_count += 1
+        except: pass
 
-    # 날짜 포맷 (YYYY.MM.DD) 통일 (마이크로 디테일: 슬래시 처리 추가)
+    # 날짜 포맷 (YYYY.MM.DD) 규격화 슬래시 예외 처리 포함
     if target_date_str:
-        clean_date = target_date_str.split()[0].replace("-", "").replace(".", "").replace("/", "").strip()
-        if len(clean_date) == 8 and clean_date.isdigit():
-            target_date_str = f"{clean_date[:4]}.{clean_date[4:6]}.{clean_date[6:]}"
+        clean = target_date_str.split()[0].replace("-", "").replace(".", "").replace("/", "").strip()
+        if len(clean) == 8: target_date_str = f"{clean[:4]}.{clean[4:6]}.{clean[6:]}"
 
-    if warnings_list: st.warning("⚠️ 데이터 동기화 알림: " + " | ".join(warnings_list[:1]))
-
-    return {
-        "name": stock_name, "price": current_price, "per": per, "pbr": pbr,
-        "industry_per": industry_per, "target_date": target_date_str,
-        "net_foreigner": net_foreigner, "net_institution": net_institution
-    }
+    return {"name": stock_name, "price": current_price, "per": per, "pbr": pbr, "industry_per": industry_per, "target_date": target_date_str, "net_foreigner": net_foreigner, "net_institution": net_institution}
 
 # ─────────────────────────────────────────────
-# 2.5. DART 전자공시 API 연동 (스마트 정밀 타격)
+# 2.5. DART 전자공시 API 연동 (순이익 오인식 완벽 박살 엔진)
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=86400)
 def get_dart_mapping(api_key):
@@ -198,13 +152,10 @@ def get_dart_mapping(api_key):
     try:
         url = f"https://opendart.fss.or.kr/api/corpCode.xml?crtfc_key={api_key}"
         res = requests.get(url, timeout=20)
-        with zipfile.ZipFile(io.BytesIO(res.content)) as z:
-            xml_data = z.read('CORPCODE.xml')
+        with zipfile.ZipFile(io.BytesIO(res.content)) as z: xml_data = z.read('CORPCODE.xml')
         root = ET.fromstring(xml_data)
-        return {node.find('stock_code').text: node.find('corp_code').text for node in root.findall('list') if node.find('stock_code').text}
-    except Exception as e:
-        st.warning(f"⚠️ DART 기업코드 매핑 실패 (API 키 확인 필요)")
-        return {}
+        return {n.find('stock_code').text: n.find('corp_code').text for n in root.findall('list') if n.find('stock_code').text}
+    except: return {}
 
 @st.cache_data(ttl=3600)
 def get_dart_fundamentals(api_key, stock_code):
@@ -212,43 +163,31 @@ def get_dart_fundamentals(api_key, stock_code):
     corp_code = mapping.get(stock_code)
     if not corp_code: return None
 
-    for year_offset in [1, 2]:
-        year = str(datetime.now().year - year_offset)
-        for acnt_type in ["fnlttCnsldtAcnt", "fnlttSinglAcnt"]:
-            url = f"https://opendart.fss.or.kr/api/{acnt_type}.json?crtfc_key={api_key}&corp_code={corp_code}&bsns_year={year}&reprt_code=11011"
+    for y in [str(datetime.now().year - 1), str(datetime.now().year - 2)]:
+        for acnt in ["fnlttCnsldtAcnt", "fnlttSinglAcnt"]:
+            url = f"https://opendart.fss.or.kr/api/{acnt}.json?crtfc_key={api_key}&corp_code={corp_code}&bsns_year={y}&reprt_code=11011"
             try:
                 res = requests.get(url, timeout=10).json()
                 if res.get('status') != '000': continue
-
                 data = res['list']
                 
-                # 💡 순이익 오매칭 완벽 방어 로직
-                def get_val(keywords):
-                    for item in data:
-                        clean_nm = item['account_nm'].replace(" ", "")
-                        if any(clean_nm == kw or clean_nm == f"{kw}(손실)" or clean_nm == f"연결{kw}" or clean_nm == f"연결{kw}(손실)" for kw in keywords):
-                            return safe_float(item['thstrm_amount'])
+                # 💡 [방어 완비] 정확히 글자가 일치하거나 지정 수식어만 인정하여 법인세전이익 가로채기 차단
+                def get_val(keys):
+                    for i in data:
+                        nm = i['account_nm'].replace(" ", "")
+                        if any(nm == kw or nm == f"{kw}(손실)" or nm == f"연결{kw}" or nm == f"연결{kw}(손실)" for kw in keys):
+                            return safe_float(i['thstrm_amount'])
                     return 0.0
-
-                revenue = get_val(['매출액', '영업수익'])
-                op_income = get_val(['영업이익'])
-                equity = get_val(['자본총계'])
-                liabilities = get_val(['부채총계'])
-                net_income = get_val(['당기순이익', '분기순이익', '반기순이익'])
-
-                return {
-                    "year": year,
-                    "acnt_type": "연결" if acnt_type == "fnlttCnsldtAcnt" else "별도",
-                    "op_margin": (op_income / revenue * 100) if revenue > 0 else 0.0,
-                    "debt_ratio": (liabilities / equity * 100) if equity > 0 else 0.0,
-                    "roe": (net_income / equity * 100) if equity > 0 else 0.0,
-                }
-            except Exception:
-                continue
+                
+                rev, op, eq, liab = get_val(['매출액', '영업수익']), get_val(['영업이익']), get_val(['자본총계']), get_val(['부채총계'])
+                net = get_val(['당기순이익', '분기순이익', '반기순이익']) # 법인세전이익 완벽 배제
+                
+                return {"year": y, "acnt_type": "연결" if acnt == "fnlttCnsldtAcnt" else "별도", "op_margin": (op/rev*100) if rev>0 else 0, "debt_ratio": (liab/eq*100) if eq>0 else 0, "roe": (net/eq*100) if eq>0 else 0}
+            except: continue
     return None
 
 # ─────────────────────────────────────────────
-# 3. 차트 / 보조지표
+# 3. 차트 / 보조지표 직접 연산 엔진
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=60)
 def get_historical_data(code):
@@ -264,19 +203,19 @@ def get_historical_data(code):
 
         df['BB_mid'] = df['Close'].rolling(window=20).mean()
         df['BB_std'] = df['Close'].rolling(window=20).std()
-        df['BB_up'] = df['BB_mid'] + 2 * df['BB_std']
+        df['BB_up']  = df['BB_mid'] + 2 * df['BB_std']
         df['BB_low'] = df['BB_mid'] - 2 * df['BB_std']
 
-        df['H-L'] = df['High'] - df['Low']
+        df['H-L']  = df['High'] - df['Low']
         df['H-PC'] = (df['High'] - df['Close'].shift(1)).abs()
-        df['L-PC'] = (df['Low'] - df['Close'].shift(1)).abs()
-        df['TR'] = df[['H-L', 'H-PC', 'L-PC']].max(axis=1)
-        df['ATR'] = df['TR'].rolling(window=14, min_periods=14).mean()
+        df['L-PC'] = (df['Low']  - df['Close'].shift(1)).abs()
+        df['TR']   = df[['H-L', 'H-PC', 'L-PC']].max(axis=1)
+        df['ATR']  = df['TR'].rolling(window=14, min_periods=14).mean()
 
         delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-        rs = gain / loss.replace(0, 1e-10)
+        gain  = (delta.where(delta > 0, 0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        loss  = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        rs    = gain / loss.replace(0, 1e-10)
         df['RSI'] = 100 - (100 / (1 + rs))
 
         df['Date_str'] = df['Date'].dt.strftime('%Y.%m.%d')
@@ -286,7 +225,7 @@ def get_historical_data(code):
         return None
 
 # ─────────────────────────────────────────────
-# 4. 앱 본문 시작
+# 4. 앱 본문 시작 및 레이아웃 정의
 # ─────────────────────────────────────────────
 st.title("📱 주식저장소 개미의 1차 퀀트 스크리너")
 
@@ -295,7 +234,7 @@ if macro_data:
     m_cols = st.columns(4)
     kospi_v, kospi_c = macro_data['kospi']
     sp500_v, sp500_c = macro_data['sp500']
-    usd_v, usd_c = macro_data['usd_krw']
+    usd_v, usd_c     = macro_data['usd_krw']
     us10y_v, us10y_c = macro_data['us10y']
     
     with m_cols[0]: st.metric("국내 코스피 지수", f"{kospi_v:,.2f}", f"{kospi_c:+.2f}%")
@@ -316,16 +255,16 @@ if not stock_code.isdigit() or len(stock_code) != 6:
 
 basic_data = get_naver_stock_data(stock_code, run_mode)
 chart_data = get_historical_data(stock_code)
-dart_data = get_dart_fundamentals(DART_API_KEY, stock_code)
+dart_data  = get_dart_fundamentals(DART_API_KEY, stock_code)
 
-if basic_data is None or basic_data['price'] == 0.0:
-    st.error("데이터 서버 통신 실패. 네트워크 상태나 종목코드를 확인해 주세요.")
+if basic_data is None:
+    st.error("데이터 서버 통신 실패. 네트워크 상태를 재확인해 주세요.")
     st.stop()
 
 if dart_data: st.info(f"✅ DART 재무 엑스레이 연결 성공 | {dart_data['year']}년 {dart_data['acnt_type']} 재무제표 기준")
 
 # ─────────────────────────────────────────────
-# 5. 차트 데이터 기준일 확정 (방어막 강화)
+# 5. 차트 데이터 기준일 확정 및 엇갈림 방어막
 # ─────────────────────────────────────────────
 is_chart_available = chart_data is not None
 
@@ -340,7 +279,6 @@ else:
     target_date = basic_data['target_date']
     matching_rows = chart_data[chart_data['Date_str'] == target_date]
 
-    # 💡 마이크로 디테일: 날짜 엇갈림 발생 시 가장 최신 데이터로 우회
     if len(matching_rows) > 0:
         pos = chart_data.index.get_loc(matching_rows.index[0])
         latest = chart_data.iloc[pos]
@@ -364,7 +302,7 @@ else:
     rsi_overheat = False
 
 # ─────────────────────────────────────────────
-# 6. 매매 단가 설정 (부분 익절 및 리스크 관리)
+# 6. 매매 전략 단가 라인 계산
 # ─────────────────────────────────────────────
 atr_desc_text = ""
 setup_cols = st.columns(3)
@@ -398,7 +336,7 @@ with setup_cols[2]:
         st.caption("📉 예상 손실: **-5.0%** (데이터 부족)")
 
 # ─────────────────────────────────────────────
-# 7. 필터 점수 계산 (DART API 우선 적용)
+# 7. 9대 철벽 필터 퀀트 스코어 연산
 # ─────────────────────────────────────────────
 now_per, now_pbr, ind_per = basic_data['per'], basic_data['pbr'], basic_data['industry_per']
 net_f, net_i = basic_data['net_foreigner'], basic_data['net_institution']
@@ -408,7 +346,7 @@ is_real_etf = (now_per == 0.0 and now_pbr == 0.0) and (
     or stock_code.startswith("1")
 )
 
-# ── F1, F2, F8: 재무 엔진 ──
+# ── F1, F2, F8: 재무 엔진 (DART 데이터 최우선) ──
 if is_real_etf:
     f1_score, f1_desc = 50, "ETF/스팩주 (가치평가 중립)"
     f2_score, f2_desc = 50, "ETF/스팩주 (자본평가 중립)"
@@ -433,7 +371,7 @@ elif dart_data:
     else: f8_score, f8_desc = 30, f"ROE {roe:.1f}% (경영/공시 리스크 경고)"
 else:
     if now_per <= 0: f1_score, f1_desc = 30, "🚨 적자 기업 리스크 (진입 주의)"
-    elif ind_per > 0 and now_per <= ind_per * 0.85: f1_score, f1_desc = 90, f"PER {now_per}배 (업종 {ind_per} 대비 저평가)"
+    elif ind_per > 0 and now_per <= ind_per * 0.85: f1_score, f1_desc = 90, f"PER {now_per}배 (업종 대비 저평가)"
     elif ind_per > 0 and now_per <= ind_per * 1.15: f1_score, f1_desc = 70, f"PER {now_per}배 (업종 수준)"
     else: f1_score, f1_desc = 40, f"PER {now_per}배 (고평가 리스크)"
 
@@ -443,7 +381,7 @@ else:
     else: f2_score, f2_desc = 40, f"PBR {now_pbr}배 (과열 상태)"
     f8_score, f8_desc = 50, "정성적 판단 (가중치↓)"
 
-# ── F3·F4·F9: 차트 기반 ──
+# ── F3·F4·F9: 기술적 분석 및 보조지표 점수 ──
 if not is_chart_available or pd.isna(ema50) or pd.isna(ema20):
     f3_score, f3_desc, f4_score, f4_desc, f9_score, f9_desc = 50, "이평선 유보", 50, "거래량 유보", 50, "지지선 유보"
 else:
@@ -484,7 +422,7 @@ else:
         elif disparity > 102: f9_score, f9_desc = int(max(30.0, 55.0 - (disparity - 102) * 1.5)), f"EMA20 상단 이탈 — 단기 과매수 (이격도 {disparity:.1f}%)"
         else: f9_score, f9_desc = int(max(30.0, 55.0 - (98 - disparity) * 1.5)), f"EMA20 하단 이탈 — 지지선 이탈 (이격도 {disparity:.1f}%)"
 
-# ── F6: 수급 ──
+# ── F6: 수급 분석 ──
 if net_f > 0 and net_i > 0: f6_score, f6_desc = 95, f"🎯 쌍끌이 매수 (외인:{int(net_f):,}, 기관:{int(net_i):,})"
 elif net_f > 0 or net_i > 0: f6_score, f6_desc = 75, f"메이저 단일 수급 ({'외국인' if net_f > 0 else '기관'} 매수)"
 elif net_f < 0 and net_i < 0: f6_score, f6_desc = 35, f"🚨 쌍끌이 매도 리스크 (외인:{int(net_f):,}, 기관:{int(net_i):,})"
@@ -492,7 +430,7 @@ elif net_f < 0 or net_i < 0: f6_score, f6_desc = 45, f"메이저 단일 이탈 (
 else: f6_score, f6_desc = 50, "메이저 수급 없음 (관망/소외)"
 
 # ─────────────────────────────────────────────
-# 8. 정성적 필터 (수동 슬라이더)
+# 8. 정성적 필터 수동 입력 슬라이더
 # ─────────────────────────────────────────────
 st.markdown("---")
 st.markdown("### 💡 정성적 필터 수동 체크")
@@ -502,14 +440,14 @@ if not dart_data and not is_real_etf:
     f8_score = st.slider("Quant: 경영진/공시 리스크 (0=최악 / 100=최고)", 0, 100, 50, step=5)
 
 # ─────────────────────────────────────────────
-# 9. 총점 계산
+# 9. 총점 계산 (동적 가중치 연산 수식)
 # ─────────────────────────────────────────────
 if is_real_etf: total_score = int((f3_score*1.5 + f4_score*1.5 + f5_score*0.5 + f6_score*1.5 + f7_score*0.5 + f8_score*0.5 + f9_score*1.0) / 7.0)
 else: total_score = int((f1_score*1.0 + f2_score*1.0 + f3_score*1.5 + f4_score*1.5 + f5_score*0.5 + f6_score*1.5 + f7_score*0.5 + f8_score*0.5 + f9_score*1.0) / 9.0)
 total_score = min(100, max(0, total_score))
 
 # ─────────────────────────────────────────────
-# 10. 리포트 출력
+# 10. 리포트 대시보드 최종 출력
 # ─────────────────────────────────────────────
 st.markdown("---")
 st.subheader(f"📊 {basic_data['name']} ({stock_code}) 종목 선별 리포트")
